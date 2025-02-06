@@ -73,8 +73,6 @@ func main() {
 					}
 				}
 			}
-
-
 			if len(azCounts) == 0 {
 				fmt.Println("No healthy and in-service instances found")
 			} else {
