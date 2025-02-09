@@ -1,7 +1,12 @@
 package main
 
+
 // Structure to hold AZ instance counts
 type AZInstanceCount map[string]int
+
+
+type AZInstanceStateCount map[string]AZInstanceCount
+
 
 // RDSInstanceCount holds the count of instances per role in an AZ
 type RDSInstanceCount struct {

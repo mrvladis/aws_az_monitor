@@ -46,33 +46,42 @@ func main() {
 			log.Fatalf("Unable to describe Auto Scaling groups: %v", err)
 		}
 
+		// Initialize the map with all possible lifecycle states
+		azStateCounts := make(AZInstanceStateCount, len(asgtypes.LifecycleState("").Values()))
+		for _, state := range asgtypes.LifecycleState("").Values() {
+			azStateCounts[string(state)] = make(AZInstanceCount)
+		}
+
 		// Process each Auto Scaling group
 		for _, asg := range listASGs {
 
 			// Create a map to store instance counts per AZ
 			azCounts := make(AZInstanceCount)
-
 			// Count instances per AZ that are healthy and in service
 			for _, instance := range asg.Instances {
-				if isHealthyAndInService(instance) {
-					azCounts[*instance.AvailabilityZone]++
-				} 
+				if isHealthyAndInService(instance) { // This is left unchanged to maintain backwards compatibility with the FIS workshop.
+					azCounts[*instance.AvailabilityZone]++ // Once workshop is updated - this need to be removed.
+				}
+				azStateCounts[string(instance.LifecycleState)][*instance.AvailabilityZone]++
 			}
 			// Print and send metrics to CloudWatch
 			fmt.Printf("\nAuto Scaling Group: %s\n", *asg.AutoScalingGroupName)
 			fmt.Printf("Healthy and InService instances per AZ:\n")
 
-			if len(azCounts) != len(asg.AvailabilityZones){
+			if len(azCounts) != len(asg.AvailabilityZones) {
 				for _, az := range asg.AvailabilityZones {
 					count, counted := azCounts[az]
 					if counted {
 						fmt.Printf("\nAvailability Zone[%s] counted. It had [%s] instances. \n", az, count)
 					} else {
 						fmt.Printf("\nAvailability Zone[%s] not counted for Unhealthy counted \n", az)
-						azCounts[az]=0
+						azCounts[az] = 0
 					}
 				}
 			}
+
+			// This is left unchanged to maintain backwards compatibility with the FIS workshop.
+			// Once workshop is updated - this need to be removed.
 			if len(azCounts) == 0 {
 				fmt.Println("No healthy and in-service instances found")
 			} else {
@@ -126,6 +135,71 @@ func main() {
 					log.Printf("Error sending metrics for ASG %s: %v\n", *asg.AutoScalingGroupName, err)
 				}
 			}
+			// end of the compatibility code
+
+			// New Code to provide ASG metrics for each state of the EC2 in the AutoScalingGroup
+			// Prepare metrics data
+			var metricDataASG []cwtypes.MetricDatum
+			totalEC2Instances := 0
+			for stateEC2, azCounts := range azStateCounts {
+				if len(azCounts) == 0 {
+					fmt.Printf("No instances found in state %s \n", stateEC2)
+					for _, az := range asg.AvailabilityZones {
+						azCounts[az] = 0
+					}
+				}
+				for az, count := range azCounts {
+					if count > 0 {
+						fmt.Printf("In State %s in Availability Zone %s: %d instances\n", stateEC2, az, count)
+						totalEC2Instances += count
+					}
+
+					// Create metric for this AZ
+					metricDataASG = append(metricDataASG, cwtypes.MetricDatum{
+						MetricName: aws.String(stateEC2),
+						Value:      aws.Float64(float64(count)),
+						Timestamp:  aws.Time(time.Now()),
+						Dimensions: []cwtypes.Dimension{
+							{
+								Name:  aws.String("AutoScalingGroupName"),
+								Value: asg.AutoScalingGroupName,
+							},
+							{
+								Name:  aws.String("AvailabilityZone"),
+								Value: aws.String(az),
+							},
+							{
+								Name:  aws.String("EC2State"),
+								Value: aws.String(stateEC2),
+							},
+						},
+						Unit: cwtypes.StandardUnitCount,
+					})
+				}
+
+			}
+
+			// Add total instances metric
+			metricDataASG = append(metricDataASG, cwtypes.MetricDatum{
+				MetricName: aws.String("TotalInstances"),
+				Value:      aws.Float64(float64(totalEC2Instances)),
+				Timestamp:  aws.Time(time.Now()),
+				Dimensions: []cwtypes.Dimension{
+					{
+						Name:  aws.String("AutoScalingGroupName"),
+						Value: asg.AutoScalingGroupName,
+					},
+				},
+				Unit: cwtypes.StandardUnitCount,
+			})
+
+			fmt.Printf("Total instances: %d\n", totalEC2Instances)
+			// Send metrics to CloudWatch
+			err = sendMetricsToCloudWatch(cwClient, metricDataASG)
+			if err != nil {
+				log.Printf("Error sending metrics for ASG %s: %v\n", *asg.AutoScalingGroupName, err)
+			}
+
 		}
 
 		// Monitor RDS clusters
@@ -173,6 +247,9 @@ func isHealthyAndInService(instance asgtypes.Instance) bool {
 	return instance.HealthStatus != nil &&
 		*instance.HealthStatus == "Healthy" &&
 		instance.LifecycleState == "InService"
+
+	//	instance.LifecycleState.Values()
+	// need to add additional check
 }
 
 func sendMetricsToCloudWatch(client *cloudwatch.Client, metricData []cwtypes.MetricDatum) error {
